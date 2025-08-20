@@ -1,0 +1,15 @@
+1-in first part of session we did not handle case of protecting session id from being accesssed by javascrtip => Suggest mitigation techniques: use cookie:{httpOnly:true} to session middleware
+
+2- resave: true => session will always be saved, even if nothing changes → performance & potential race condition issues.=> so we should make resave:false
+
+
+3- also we did not handle case for checking endpoint from request is coming , like in our case we want to check that the same endpoint from session id has been created , that endpoint which we want our user send requests to prevent csrf attacks => Suggest mitigation techniques: we should add to cookie object key and value sameSite:true to make sure that user send request from the same site where he created id session
+
+
+
+4- in route of login with method post => we did not validate inputs and also we did not sanitize the inputs for preventing the case of sql injection
+
+5-saveUninitialized: true → creates sessions for everyone (even not logged in). Attackers can abuse session storage.
+
+
+6-secret: 'your-secret-key' → weak and predictable → session hijacking possible.

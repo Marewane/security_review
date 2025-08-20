@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+
+  <h2>Login</h2>
+  <input type="text" id="username" placeholder="Username">
+  <input type="password" id="password" placeholder="Password">
+  <button onclick="login()">Login</button>
+
+  <h2>Protected Data</h2>
+  <button onclick="getProtected()">Get Protected</button>
+
+  <pre id="output"></pre>
+
+  <script>
+    let token = null;
+
+    async function login() {
+      const username = document.getElementById("username").value;
+      const password = document.getElementById("password").value;
+
+      const res = await fetch("http://localhost:3000/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password })
+      });
+
+      const data = await res.json();
+
+      if (data.token) {
+        token = data.token;
+        localStorage.setItem("jwt", token); // store in localStorage
+        document.getElementById("output").textContent = "Login successful! Token saved.";
+      } else {
+        document.getElementById("output").textContent = "Login failed.";
+      }
+    }
+
+    async function getProtected() {
+      // Load token from localStorage
+      token = localStorage.getItem("jwt");
+
+      if (!token) {
+        document.getElementById("output").textContent = "No token found. Please login first.";
+        return;
+      }
+
+      const res = await fetch("http://localhost:3000/protected", {
+        headers: {
+          "Authorization": "Bearer " + token
+        }
+      });
+
+      if (res.status === 401) {
+        document.getElementById("output").textContent = "Unauthorized! Please login again.";
+        return;
+      }
+
+      const data = await res.json();
+      document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+    }
+  </script>
+
+
+</body>
+</html>
