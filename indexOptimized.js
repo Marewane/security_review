@@ -1,56 +1,55 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const session = require('express-session');
+const cookieParser = require('cookie-parser');
 const bcrypt = require('bcrypt');
-const csrf = require('csurf');
-const { query,body, validationResult, matchedData } = require('express-validator');
+const { body, validationResult, matchedData } = require('express-validator');
 const jwt = require('jsonwebtoken');
-// const helmet = require('helmet');
+
 const app = express();
 
 // Middleware
-// app.use(helmet()); // Secure headers
+
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
+app.use(cookieParser());
 
-// Session setup
-app.use(session({
-  secret: 'super_secure_secret_key',
-  resave: false, 
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    secure: false, // set true in production with HTTPS
-    sameSite: true,
-    maxAge: 30 * 60 * 1000 // 30 minutes to expire the session id
-  }
-}));
-
-// CSRF protection
-const csrfProtection = csrf();
-app.use(csrfProtection);
+// Configuration
+const JWT_SECRET = 'super_secure_jwt_secret_key';
+const TOKEN_EXPIRY = '30m';
 
 // Fake "database"
 const users = [
-  { username: 'admin', passwordHash: bcrypt.hashSync('password123', 10) } // hashed password
+  { username: 'admin', passwordHash: bcrypt.hashSync('password123', 10) }
 ];
 
-// Middleware to protect routes
+// Middleware: Authenticate via JWT from cookie
 function authMiddleware(req, res, next) {
-  if (!req.session.user) return res.redirect('/login');
-  next();
+  const token = req.cookies.token;
+
+  if (!token) {
+    return res.redirect('/login');
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.redirect('/login');
+    }
+    req.user = decoded;
+    next();
+  });
 }
 
 // Escape HTML to prevent XSS
 function escapeHtml(str) {
   return str.replace(/[&<>"']/g, (m) => ({
-    '&':'&amp;',
-    '<':'&lt;',
-    '>':'&gt;',
-    '"':'&quot;',
-    "'":'&#39;'
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
   }[m]));
 }
+
 
 // Routes
 app.get('/', (req, res) => {
@@ -61,68 +60,117 @@ app.get('/login', (req, res) => {
   res.send(`
     <h1>Login</h1>
     <form action="/login" method="POST">
-      <input type="hidden" name="_csrf" value="${req.csrfToken()}" />
-      <input name="username" placeholder="Username" required /><br>
-      <input type="password" name="password" placeholder="Password" required /><br>
+      <input name="username" placeholder="Username" required /><br><br>
+      <input type="password" name="password" placeholder="Password" required /><br><br>
       <button type="submit">Login</button>
     </form>
   `);
 });
 
-function loginEndpointSanitizationAndValidation(){
+// Enhanced: Sanitize & Validate Input
+function loginValidation() {
   return [
-    body('username').trim().isAlphanumeric().isLength({ min: 3 }),
-    body('password').trim().isLength({ min: 5 })
+    body('username')
+      .trim()
+      .isAlphanumeric()
+      .withMessage('Username must contain only letters and numbers')
+      .isLength({ min: 3, max: 30 })
+      .withMessage('Username must be between 3 and 30 characters')
+      .escape(), // HTML sanitize
+
+    body('password')
+      .trim()
+      .isLength({ min: 5, max: 128 })
+      .withMessage('Password must be at least 5 characters')
+      .escape() // Sanitize (though password shouldn't have HTML, but safe)
   ];
 }
 
-app.post('/login', 
-  csrfProtection, // <-- Add this explicitly
-  loginEndpointSanitizationAndValidation(),
-  (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
 
-    const { username, password } = req.body;
-    const user = users.find(u => u.username === username);
-    if (!user) {
-      return res.send('Invalid username or password');
-    }
 
-    const match = bcrypt.compareSync(password, user.passwordHash);
-    if (!match) {
-      return res.send('Invalid username or password');
-    }
+// POST /login - Validate, sanitize, verify, issue JWT
+app.post('/login', loginValidation(), (req, res) => {
+  const errors = validationResult(req);
 
-    req.session.user = username;
-    res.redirect('/profile');
+  // Improved Error Handling
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
   }
-);
 
-app.get('/profile', authMiddleware, (req, res) => {
-  const safeUsername = escapeHtml(req.session.user);
-  res.send(`<h1>Welcome, ${safeUsername}</h1>
-            <p><a href="/logout">Logout</a></p>`);
+  // Use sanitized input
+  const { username, password } = matchedData(req); // Only get sanitized/validated data
+
+  const user = users.find(u => u.username === username);
+
+  if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+    return res.status(401).send('Invalid username or password');
+  }
+
+  // Sanitize data BEFORE putting in JWT payload
+  const sanitizedUsername = escapeHtml(username); // Prevent any injection in payload
+
+  // Create JWT with sanitized payload
+  const token = jwt.sign(
+    { 
+      username: sanitizedUsername // Sanitized!
+    },
+    JWT_SECRET,
+    { 
+      expiresIn: TOKEN_EXPIRY 
+    }
+  );
+
+  // Set in HttpOnly cookie
+  res.cookie('token', token, {
+    httpOnly: true, // prevent javascript from access cookie
+    secure: false, // use either http or https
+    sameSite: 'lax', // prevent website from csrf attacks
+    maxAge: 30 * 60 * 1000
+  });
+
+  res.redirect('/profile');
 });
 
+
+
+// GET /profile - Protected route
+app.get('/profile', authMiddleware, (req, res) => {
+  const safeUsername = escapeHtml(req.user.username);
+  res.send(`
+    <h1>Welcome, ${safeUsername}</h1>
+    <p><a href="/logout">Logout</a></p>
+  `);
+});
+
+
+
+// GET /logout - Clear cookie
 app.get('/logout', (req, res) => {
-  req.session.destroy(err => {
-    res.redirect('/login');
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: false,
+    sameSite: 'lax'
+  });
+  res.redirect('/login');
+});
+
+
+
+// Global Error Handling Middleware
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({
+    success: false,
+    message: 'Something went wrong!',
   });
 });
 
-
-// testing xss
-app.get('/hello',
-  
-  query('name').trim().isLength({min:3}).escape()
-  ,(req,res)=>{
-  const {name} = matchedData(req);
-  res.send(`
-    <h1>Hello ${name}</h1>
-    `)
-})
 // Start server
-app.listen(3000, () => console.log('Secure app running on http://localhost:3000'));
+app.listen(3000, () => {
+  console.log('JWT + HttpOnly Cookie App running on http://localhost:3000');
+  console.log('Try logging in with username: admin, password: password123');
+});
